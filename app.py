@@ -1,6 +1,9 @@
 import ast
+import atexit
 import json
 import logging
+import os
+import ollama
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 from flask_cors import CORS
 from ia import orquestrador
@@ -94,5 +97,30 @@ def executar():
         return jsonify({"erro": str(e)}), 400
 
 
+def _aquecer_modelo() -> None:
+    """Carrega o modelo na RAM antes de aceitar requisições."""
+    try:
+        logger.info("Carregando modelo '%s' na memória (keep_alive=-1)…", config.OLLAMA_MODEL)
+        ollama.generate(model=config.OLLAMA_MODEL, keep_alive=-1)
+        logger.info("Modelo '%s' pronto.", config.OLLAMA_MODEL)
+    except Exception as e:
+        logger.error("Falha ao carregar modelo: %s", e)
+
+
+def _descarregar_modelo() -> None:
+    """Libera o modelo da RAM ao encerrar o servidor."""
+    try:
+        logger.info("Descarregando modelo '%s'…", config.OLLAMA_MODEL)
+        ollama.generate(model=config.OLLAMA_MODEL, keep_alive=0)
+        logger.info("Modelo descarregado.")
+    except Exception as e:
+        logger.warning("Falha ao descarregar modelo: %s", e)
+
+
 if __name__ == "__main__":
+    # Com debug=True o Werkzeug spawna um processo filho (WERKZEUG_RUN_MAIN=true)
+    # que é o que realmente serve as requisições — o warmup roda só nele.
+    if not config.DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        _aquecer_modelo()
+        atexit.register(_descarregar_modelo)
     app.run(debug=config.DEBUG, port=5000, threaded=True)
