@@ -10,7 +10,7 @@ CORS(app)
 
 SAFE_NODES = {
     ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
-    ast.Add, ast.Sub, ast.Mul, ast.Div, ast.Mod, ast.Pow,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow,
     ast.USub, ast.UAdd, ast.Call, ast.Name,
 }
 SAFE_NAMES = {
