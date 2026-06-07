@@ -16,4 +16,8 @@ OLLAMA_OPTIONS = {
     # Threads de CPU: usa todos os núcleos disponíveis.
     # i5-1334U tem 10 núcleos (6P + 4E).
     "num_thread": os.cpu_count() or 4,
+
+    # Temperatura baixa melhora aderência ao system prompt e uso de ferramentas.
+    # Com temperatura padrão (~0.7) o qwen2.5:7b ignora tools com frequência.
+    "temperature": 0.1,
 }
