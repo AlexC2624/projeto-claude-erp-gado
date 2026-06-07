@@ -142,6 +142,10 @@ function processarEvento(evento, balao, logArea, estado) {
             break;
         }
 
+        case "heartbeat":
+            // keep-alive silencioso — mantém a conexão SSE viva enquanto o modelo processa
+            break;
+
         case "erro": {
             if (estado.streamEl) estado.streamEl.remove();
             logArea.remove();

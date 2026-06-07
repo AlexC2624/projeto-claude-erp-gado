@@ -1,5 +1,8 @@
 import json
 import logging
+import queue
+import threading
+from typing import Iterator
 import ollama
 from ia import executor
 from ia.ferramentas import TOOLS
@@ -47,7 +50,7 @@ def _parse_fallback(content: str) -> list | None:
     return None
 
 
-def _streamar_chat(messages):
+def _streamar_chat(messages: list):
     """
     Encapsula ollama.chat(stream=True).
 
@@ -55,8 +58,8 @@ def _streamar_chat(messages):
       ("token", str)              — token de texto gerado (apenas para respostas em texto puro)
       ("mensagem", msg, str)      — último yield: objeto Message completo + texto acumulado
     """
-    texto_partes = []
-    is_tool_call = None   # None=desconhecido, True=JSON/tool-call, False=texto puro
+    texto_partes: list[str] = []
+    is_tool_call: bool | None = None   # None=desconhecido, True=JSON/tool-call, False=texto puro
     ultima_msg = None
 
     for chunk in ollama.chat(
@@ -70,16 +73,13 @@ def _streamar_chat(messages):
         delta = chunk.message.content or ""
         if delta:
             texto_partes.append(delta)
-            # ← diagnóstico: confirma que o Ollama libera tokens progressivamente
             logger.debug("⟳ chunk #%d: %r", len(texto_partes), delta[:30])
 
-            # Determina o tipo a partir do primeiro caractere significativo
             if is_tool_call is None:
                 parcial = "".join(texto_partes).lstrip()
                 if parcial:
                     is_tool_call = parcial[0] in ("{", "[")
 
-            # Só emite tokens para o front quando é uma resposta em texto
             if is_tool_call is False:
                 yield ("token", delta)
 
@@ -91,17 +91,52 @@ def _streamar_chat(messages):
     yield ("mensagem", ultima_msg, "".join(texto_partes))
 
 
-def orquestrar_stream(mensagem: str, historico: list = None):
+def _streamar_com_heartbeat(messages: list, intervalo: float = 8.0) -> Iterator[tuple]:
+    """
+    Executa _streamar_chat() numa thread e re-emite os itens aqui.
+    A cada `intervalo` segundos sem chunk emite ("heartbeat", None) para manter
+    a conexão SSE viva durante o silêncio inicial (modelo ainda processando).
+    """
+    q: queue.Queue = queue.Queue()
+
+    def _worker():
+        try:
+            for item in _streamar_chat(messages):
+                q.put(("item", item))
+        except Exception as exc:
+            q.put(("erro", str(exc)))
+        finally:
+            q.put(("fim", None))
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    while True:
+        try:
+            kind, valor = q.get(timeout=intervalo)
+        except queue.Empty:
+            yield ("heartbeat", None)
+            continue
+
+        if kind == "fim":
+            break
+        if kind == "erro":
+            raise RuntimeError(valor)
+        yield valor  # kind == "item"
+
+
+def orquestrar_stream(mensagem: str, historico: list | None = None):
     """
     Generator principal de eventos SSE.
     Eventos possíveis:
       gerando         — modelo está gerando (sinaliza início de cada etapa)
+      heartbeat       — keep-alive enviado a cada 8 s de silêncio do modelo
       token           — token de texto chegando em tempo real
       ferramenta_inicio / ferramenta_fim — execução de ferramentas CRUD
       partes          — resposta final renderizável (encerra o stream)
       erro            — exceção capturada
     """
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += (historico or [])
     messages.append({"role": "user", "content": mensagem})
 
@@ -113,17 +148,19 @@ def orquestrar_stream(mensagem: str, historico: list = None):
             logger.debug("--- Etapa %d/%d → chamando %s ---",
                          step, config.MAX_LOOP_STEPS, config.OLLAMA_MODEL)
 
-            # Sinaliza imediatamente ao front que a geração começou
             yield {"tipo": "gerando", "etapa": step}
 
             texto_completo = ""
             ultima_msg = None
 
-            for item in _streamar_chat(messages):
-                if item[0] == "token":
+            for item in _streamar_com_heartbeat(messages):
+                if item[0] == "heartbeat":
+                    yield {"tipo": "heartbeat"}
+                elif item[0] == "token":
                     yield {"tipo": "token", "conteudo": item[1]}
-                else:  # "mensagem"
-                    _, ultima_msg, texto_completo = item
+                elif item[0] == "mensagem":
+                    ultima_msg = item[1]
+                    texto_completo = item[2]
 
             logger.debug(
                 "Resposta recebida | tool_calls=%s | content=%r",
@@ -131,7 +168,6 @@ def orquestrar_stream(mensagem: str, historico: list = None):
                 texto_completo[:120],
             )
 
-            # ── Sem tool_calls: resposta final de texto ────────────────
             if not (ultima_msg and ultima_msg.tool_calls):
                 logger.warning("Modelo não usou ferramenta. Tentando fallback JSON.")
                 fallback = _parse_fallback(texto_completo)
@@ -140,12 +176,10 @@ def orquestrar_stream(mensagem: str, historico: list = None):
                     yield {"tipo": "partes", "parts": fallback}
                 else:
                     logger.info("Resposta em texto puro (stream concluído).")
-                    # Texto já foi enviado token a token; partes confirma o fim
                     yield {"tipo": "partes", "parts": [{"tipo": "texto", "conteudo": texto_completo or "Sem resposta."}]}
                 return
 
-            # ── Com tool_calls: processa cada ferramenta ───────────────
-            messages.append(ultima_msg)
+            messages.append(ultima_msg)  # type: ignore[arg-type]
 
             for call in ultima_msg.tool_calls:
                 nome = call.function.name
@@ -158,10 +192,10 @@ def orquestrar_stream(mensagem: str, historico: list = None):
                     return
 
                 descricao = _DESCRICOES_FERRAMENTAS.get(nome, nome)
-                logger.info("[FERRAMENTA] %s(%s)", nome, json.dumps(args, ensure_ascii=False))
-                yield {"tipo": "ferramenta_inicio", "nome": nome, "descricao": descricao, "args": args}
+                logger.info("[FERRAMENTA] %s(%s)", nome, json.dumps(dict(args), ensure_ascii=False))
+                yield {"tipo": "ferramenta_inicio", "nome": nome, "descricao": descricao, "args": dict(args)}
 
-                resultado = executor.executar(nome, args)
+                resultado = executor.executar(nome, dict(args))
                 logger.info("[RESULTADO ] %s → %s", nome,
                             json.dumps(resultado, ensure_ascii=False)[:200])
                 yield {"tipo": "ferramenta_fim", "nome": nome, "resultado": resultado}

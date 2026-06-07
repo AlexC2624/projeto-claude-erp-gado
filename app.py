@@ -6,8 +6,20 @@ import os
 import ollama
 from flask import Flask, request, jsonify, render_template, Response
 from flask_cors import CORS
+from werkzeug.serving import WSGIRequestHandler
 from ia import orquestrador
 import config
+
+
+# ── Werkzeug sem buffer de escrita (obrigatório para SSE) ──────
+# O servidor de desenvolvimento do Werkzeug usa socket.makefile('wb') com buffer
+# de ~8 KB. Eventos SSE de 50 bytes cada acumulam nesse buffer e chegam ao
+# browser todos de uma vez ao fechar a conexão.
+# Com wbufsize=0 cada write() vai direto ao socket sem bufferizar.
+class StreamingHandler(WSGIRequestHandler):
+    def setup(self) -> None:
+        super().setup()
+        self.wfile = self.connection.makefile("wb", 0)
 
 # ── Logging detalhado ──────────────────────────────────────
 logging.basicConfig(
@@ -133,4 +145,5 @@ if __name__ == "__main__":
         atexit.register(_descarregar_modelo)
     # use_reloader=False: o reloader do Werkzeug envolve o app em
     # middleware extra que pode bufferizar respostas SSE.
-    app.run(debug=config.DEBUG, port=5000, threaded=True, use_reloader=False)
+    app.run(debug=config.DEBUG, port=5000, threaded=True, use_reloader=False,
+            request_handler=StreamingHandler)
