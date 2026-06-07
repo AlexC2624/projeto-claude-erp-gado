@@ -70,6 +70,8 @@ def _streamar_chat(messages):
         delta = chunk.message.content or ""
         if delta:
             texto_partes.append(delta)
+            # ← diagnóstico: confirma que o Ollama libera tokens progressivamente
+            logger.debug("⟳ chunk #%d: %r", len(texto_partes), delta[:30])
 
             # Determina o tipo a partir do primeiro caractere significativo
             if is_tool_call is None:

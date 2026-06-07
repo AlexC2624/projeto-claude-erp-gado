@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import ollama
-from flask import Flask, request, jsonify, render_template, Response, stream_with_context
+from flask import Flask, request, jsonify, render_template, Response
 from flask_cors import CORS
 from ia import orquestrador
 import config
@@ -72,14 +72,17 @@ def chat():
             erro = json.dumps({"tipo": "erro", "mensagem": str(e)}, ensure_ascii=False)
             yield f"data: {erro}\n\n"
 
-    return Response(
-        stream_with_context(generate()),
+    resp = Response(
+        generate(),
         mimetype="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         },
     )
+    resp.implicit_sequence_conversion = False
+    return resp
 
 
 @app.route("/api/executar", methods=["POST"])
@@ -128,4 +131,6 @@ if __name__ == "__main__":
     if not config.DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         _aquecer_modelo()
         atexit.register(_descarregar_modelo)
-    app.run(debug=config.DEBUG, port=5000, threaded=True)
+    # use_reloader=False: o reloader do Werkzeug envolve o app em
+    # middleware extra que pode bufferizar respostas SSE.
+    app.run(debug=config.DEBUG, port=5000, threaded=True, use_reloader=False)
