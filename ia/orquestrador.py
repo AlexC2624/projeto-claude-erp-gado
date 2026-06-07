@@ -23,7 +23,7 @@ REGRAS ABSOLUTAS — violá-las é um erro grave:
 6. Em caso de dúvida sobre um valor, consulte antes de responder.
 """
 
-_DESCRICOES = {
+_DESCRICOES_FERRAMENTAS = {
     "consulta": "Consultando banco de dados",
     "cadastra": "Cadastrando registro",
     "atualiza": "Atualizando registro",
@@ -47,15 +47,57 @@ def _parse_fallback(content: str) -> list | None:
     return None
 
 
+def _streamar_chat(messages):
+    """
+    Encapsula ollama.chat(stream=True).
+
+    Yields:
+      ("token", str)              — token de texto gerado (apenas para respostas em texto puro)
+      ("mensagem", msg, str)      — último yield: objeto Message completo + texto acumulado
+    """
+    texto_partes = []
+    is_tool_call = None   # None=desconhecido, True=JSON/tool-call, False=texto puro
+    ultima_msg = None
+
+    for chunk in ollama.chat(
+        model=config.OLLAMA_MODEL,
+        messages=messages,
+        tools=TOOLS,
+        keep_alive=-1,
+        options=config.OLLAMA_OPTIONS,
+        stream=True,
+    ):
+        delta = chunk.message.content or ""
+        if delta:
+            texto_partes.append(delta)
+
+            # Determina o tipo a partir do primeiro caractere significativo
+            if is_tool_call is None:
+                parcial = "".join(texto_partes).lstrip()
+                if parcial:
+                    is_tool_call = parcial[0] in ("{", "[")
+
+            # Só emite tokens para o front quando é uma resposta em texto
+            if is_tool_call is False:
+                yield ("token", delta)
+
+        if chunk.message.tool_calls:
+            is_tool_call = True
+
+        ultima_msg = chunk.message
+
+    yield ("mensagem", ultima_msg, "".join(texto_partes))
+
+
 def orquestrar_stream(mensagem: str, historico: list = None):
     """
-    Generator que emite eventos SSE durante o loop ReAct.
-    Cada item yielded é um dict que será serializado como 'data: <json>\\n\\n'.
+    Generator principal de eventos SSE.
     Eventos possíveis:
-      ferramenta_inicio  — ferramenta sendo executada
-      ferramenta_fim     — ferramenta concluída
-      partes             — resposta final (encerra o stream)
-      erro               — exceção capturada (encerra o stream)
+      gerando         — modelo está gerando (sinaliza início de cada etapa)
+      token           — token de texto chegando em tempo real
+      ferramenta_inicio / ferramenta_fim — execução de ferramentas CRUD
+      partes          — resposta final renderizável (encerra o stream)
+      erro            — exceção capturada
     """
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += (historico or [])
@@ -66,54 +108,60 @@ def orquestrar_stream(mensagem: str, historico: list = None):
 
     try:
         for step in range(1, config.MAX_LOOP_STEPS + 1):
-            logger.debug("--- Etapa %d/%d → chamando %s ---", step, config.MAX_LOOP_STEPS, config.OLLAMA_MODEL)
+            logger.debug("--- Etapa %d/%d → chamando %s ---",
+                         step, config.MAX_LOOP_STEPS, config.OLLAMA_MODEL)
 
-            response = ollama.chat(
-                model=config.OLLAMA_MODEL,
-                messages=messages,
-                tools=TOOLS,
-                keep_alive=-1,
-                options=config.OLLAMA_OPTIONS,
-            )
+            # Sinaliza imediatamente ao front que a geração começou
+            yield {"tipo": "gerando", "etapa": step}
+
+            texto_completo = ""
+            ultima_msg = None
+
+            for item in _streamar_chat(messages):
+                if item[0] == "token":
+                    yield {"tipo": "token", "conteudo": item[1]}
+                else:  # "mensagem"
+                    _, ultima_msg, texto_completo = item
 
             logger.debug(
                 "Resposta recebida | tool_calls=%s | content=%r",
-                bool(response.message.tool_calls),
-                (response.message.content or "")[:120],
+                bool(ultima_msg and ultima_msg.tool_calls),
+                texto_completo[:120],
             )
 
-            # Modelo não chamou nenhuma ferramenta
-            if not response.message.tool_calls:
-                content = response.message.content or ""
+            # ── Sem tool_calls: resposta final de texto ────────────────
+            if not (ultima_msg and ultima_msg.tool_calls):
                 logger.warning("Modelo não usou ferramenta. Tentando fallback JSON.")
-
-                fallback = _parse_fallback(content)
+                fallback = _parse_fallback(texto_completo)
                 if fallback:
-                    logger.info("Fallback JSON parseado com sucesso (%d parte(s)).", len(fallback))
+                    logger.info("Fallback JSON parseado (%d parte(s)).", len(fallback))
                     yield {"tipo": "partes", "parts": fallback}
                 else:
-                    logger.info("Resposta em texto puro.")
-                    yield {"tipo": "partes", "parts": [{"tipo": "texto", "conteudo": content or "Sem resposta."}]}
+                    logger.info("Resposta em texto puro (stream concluído).")
+                    # Texto já foi enviado token a token; partes confirma o fim
+                    yield {"tipo": "partes", "parts": [{"tipo": "texto", "conteudo": texto_completo or "Sem resposta."}]}
                 return
 
-            messages.append(response.message)
+            # ── Com tool_calls: processa cada ferramenta ───────────────
+            messages.append(ultima_msg)
 
-            for call in response.message.tool_calls:
+            for call in ultima_msg.tool_calls:
                 nome = call.function.name
                 args = call.function.arguments
 
                 if nome == "responda":
                     parts = args.get("parts", [{"tipo": "texto", "conteudo": str(args)}])
-                    logger.info("responda() chamado com %d parte(s). Encerrando loop.", len(parts))
+                    logger.info("responda() chamado com %d parte(s).", len(parts))
                     yield {"tipo": "partes", "parts": parts}
                     return
 
-                descricao = _DESCRICOES.get(nome, nome)
+                descricao = _DESCRICOES_FERRAMENTAS.get(nome, nome)
                 logger.info("[FERRAMENTA] %s(%s)", nome, json.dumps(args, ensure_ascii=False))
                 yield {"tipo": "ferramenta_inicio", "nome": nome, "descricao": descricao, "args": args}
 
                 resultado = executor.executar(nome, args)
-                logger.info("[RESULTADO ] %s → %s", nome, json.dumps(resultado, ensure_ascii=False)[:200])
+                logger.info("[RESULTADO ] %s → %s", nome,
+                            json.dumps(resultado, ensure_ascii=False)[:200])
                 yield {"tipo": "ferramenta_fim", "nome": nome, "resultado": resultado}
 
                 messages.append({

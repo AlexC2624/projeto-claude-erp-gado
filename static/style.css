@@ -123,6 +123,12 @@ main {
 
 .bloco-html tr:nth-child(even) { background: #fafafa; }
 
+/* Texto sendo construído token a token */
+.stream-texto {
+    margin: 0;
+    line-height: 1.55;
+}
+
 .bloco-python {
     background: #1e1e2e;
     color: #cdd6f4;

@@ -70,23 +70,55 @@ function renderizarResposta(parts) {
 
 // ── Processamento de eventos SSE ───────────────────────────
 
-function processarEvento(evento, balao, logArea) {
+function processarEvento(evento, balao, logArea, estado) {
     switch (evento.tipo) {
 
+        // Modelo começou a gerar — atualiza o indicador "Pensando…"
+        case "gerando": {
+            estado.indicador.textContent = "Gerando resposta…";
+            break;
+        }
+
+        // Token chegando em tempo real — constrói o texto progressivamente
+        case "token": {
+            // Remove o indicador de "Pensando/Gerando" na primeira chegada de token
+            if (estado.indicador && estado.indicador.parentNode) {
+                estado.indicador.remove();
+                estado.indicador = null;
+            }
+            if (!estado.streamEl) {
+                logArea.remove();
+                estado.streamEl = document.createElement("p");
+                estado.streamEl.className = "stream-texto";
+                balao.appendChild(estado.streamEl);
+            }
+            estado.streamEl.textContent += evento.conteudo;
+            balao.scrollIntoView({ behavior: "smooth" });
+            break;
+        }
+
+        // Ferramenta começou a executar
         case "ferramenta_inicio": {
+            // Remove indicador "Gerando" quando ferramentas começam
+            if (estado.indicador && estado.indicador.parentNode) {
+                estado.indicador.remove();
+                estado.indicador = null;
+            }
             const item = document.createElement("div");
             item.className = "log-item ativo";
             item.dataset.nome = evento.nome;
             item.textContent = evento.descricao || evento.nome;
             logArea.appendChild(item);
-            logArea._atual = item;
+            estado.ultimoLogItem = item;
             balao.scrollIntoView({ behavior: "smooth" });
             break;
         }
 
+        // Ferramenta concluída
         case "ferramenta_fim": {
-            // Marca o item ativo mais recente como concluído
-            const ativo = logArea.querySelector(`.log-item.ativo[data-nome="${evento.nome}"]`);
+            const ativo = logArea.querySelector(
+                `.log-item.ativo[data-nome="${evento.nome}"]`
+            );
             if (ativo) {
                 ativo.classList.remove("ativo");
                 ativo.classList.add("concluido");
@@ -94,14 +126,24 @@ function processarEvento(evento, balao, logArea) {
             break;
         }
 
+        // Resposta final — renderiza o conteúdo completo
         case "partes": {
+            // Remove texto em streaming se existia (substituído pelas partes)
+            if (estado.streamEl) {
+                estado.streamEl.remove();
+                estado.streamEl = null;
+            }
             logArea.remove();
             preencherBalao(evento.parts, balao);
-            historico.push({ role: "assistant", content: JSON.stringify(evento.parts) });
+            historico.push({
+                role: "assistant",
+                content: JSON.stringify(evento.parts),
+            });
             break;
         }
 
         case "erro": {
+            if (estado.streamEl) estado.streamEl.remove();
             logArea.remove();
             const p = document.createElement("p");
             p.className = "erro-ia";
@@ -125,19 +167,24 @@ async function enviarMensagem() {
     adicionarMensagemUsuario(texto);
     historico.push({ role: "user", content: texto });
 
-    // Cria balão da IA com área de log imediatamente
+    // Balão da IA com indicador "Pensando…" imediato
     const balao = document.createElement("div");
     balao.className = "mensagem ia";
 
     const logArea = document.createElement("div");
     logArea.className = "ia-log";
-    const dot = document.createElement("div");
-    dot.className = "log-item ativo";
-    dot.textContent = "Pensando…";
-    logArea.appendChild(dot);
+
+    const indicador = document.createElement("div");
+    indicador.className = "log-item ativo";
+    indicador.textContent = "Pensando…";
+    logArea.appendChild(indicador);
+
     balao.appendChild(logArea);
     chat.appendChild(balao);
     balao.scrollIntoView({ behavior: "smooth" });
+
+    // Estado mutável compartilhado entre eventos do mesmo turn
+    const estado = { indicador, streamEl: null, ultimoLogItem: null };
 
     try {
         const resp = await fetch("/api/chat", {
@@ -149,9 +196,7 @@ async function enviarMensagem() {
             }),
         });
 
-        if (!resp.ok) {
-            throw new Error(`HTTP ${resp.status}`);
-        }
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -163,18 +208,16 @@ async function enviarMensagem() {
 
             buffer += decoder.decode(value, { stream: true });
 
-            // Processa linhas completas (SSE usa \n\n como separador de eventos)
+            // SSE usa \n\n como separador de eventos
             const blocos = buffer.split("\n\n");
-            buffer = blocos.pop(); // guarda linha incompleta
+            buffer = blocos.pop();
 
             for (const bloco of blocos) {
                 for (const linha of bloco.split("\n")) {
                     if (!linha.startsWith("data: ")) continue;
                     try {
                         const evento = JSON.parse(linha.slice(6));
-                        // Remove o "Pensando…" na primeira ferramenta/parte real
-                        if (dot.parentNode) dot.remove();
-                        processarEvento(evento, balao, logArea);
+                        processarEvento(evento, balao, logArea, estado);
                     } catch (e) {
                         console.error("SSE parse error:", e, linha);
                     }
@@ -183,8 +226,9 @@ async function enviarMensagem() {
         }
 
     } catch (err) {
+        if (estado.indicador?.parentNode) estado.indicador.remove();
         logArea.remove();
-        renderizarErro("Falha na conexão com o servidor: " + err.message);
+        renderizarErro("Falha na conexão: " + err.message);
     } finally {
         btnEnviar.disabled = false;
         input.focus();
