@@ -134,26 +134,59 @@ main {
     white-space: pre-wrap;
 }
 
-/* ── Indicador de processamento ─────────────────────────── */
-.processando {
+/* ── Log de ferramentas em tempo real ───────────────────── */
+.ia-log {
     display: flex;
-    gap: 6px;
-    padding: 10px 14px;
-    align-self: flex-start;
-    margin-bottom: 4px;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 2px;
 }
 
-.processando span {
-    width: 9px;
-    height: 9px;
+.log-item {
+    font-size: .8rem;
+    color: #aaa;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 0;
+    transition: color .3s;
+}
+
+.log-item::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
+    background: #ccc;
+    flex-shrink: 0;
+    transition: background .3s;
+}
+
+.log-item.ativo {
+    color: #2d5a27;
+}
+
+.log-item.ativo::before {
     background: #2d5a27;
     animation: pulsar .9s infinite ease-in-out;
 }
 
-.processando span:nth-child(2) { animation-delay: .2s; }
-.processando span:nth-child(3) { animation-delay: .4s; }
+.log-item.concluido {
+    color: #bbb;
+}
 
+.log-item.concluido::before {
+    background: #a0c89a;
+    animation: none;
+}
+
+.erro-ia {
+    color: #c0392b;
+    font-size: .9rem;
+}
+
+/* ── Animação de pulsação ────────────────────────────────── */
 @keyframes pulsar {
     0%, 80%, 100% { transform: scale(1);   opacity: .45; }
     40%            { transform: scale(1.5); opacity: 1;   }

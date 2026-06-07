@@ -3,23 +3,10 @@
 const chat      = document.getElementById("chat");
 const input     = document.getElementById("input");
 const btnEnviar = document.getElementById("btn-enviar");
-const indicador = document.getElementById("processando");
 
 const historico = [];
 
 // ── Helpers de UI ──────────────────────────────────────────
-
-function mostrarIndicadorProcessando() {
-    indicador.classList.remove("oculto");
-    indicador.setAttribute("aria-hidden", "false");
-    chat.appendChild(indicador);
-    indicador.scrollIntoView({ behavior: "smooth" });
-}
-
-function esconderIndicadorProcessando() {
-    indicador.classList.add("oculto");
-    indicador.setAttribute("aria-hidden", "true");
-}
 
 function adicionarMensagemUsuario(texto) {
     const div = document.createElement("div");
@@ -37,12 +24,9 @@ function renderizarErro(msg) {
     div.scrollIntoView({ behavior: "smooth" });
 }
 
-// ── Renderização de partes ─────────────────────────────────
+// ── Renderização de parts num balão existente ──────────────
 
-function renderizarResposta(parts) {
-    const balao = document.createElement("div");
-    balao.className = "mensagem ia";
-
+function preencherBalao(parts, balao) {
     for (const part of parts) {
         if (part.tipo === "texto") {
             const p = document.createElement("p");
@@ -56,6 +40,11 @@ function renderizarResposta(parts) {
             balao.appendChild(wrapper);
 
         } else if (part.tipo === "python") {
+            const pre = document.createElement("pre");
+            pre.className = "bloco-python";
+            pre.textContent = "Calculando…";
+            balao.appendChild(pre);
+
             fetch("/api/executar", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -63,31 +52,92 @@ function renderizarResposta(parts) {
             })
             .then(r => r.json())
             .then(r => {
-                const pre = document.createElement("pre");
-                pre.className = "bloco-python";
                 pre.textContent = r.saida ?? r.erro;
-                balao.appendChild(pre);
                 pre.scrollIntoView({ behavior: "smooth" });
             });
         }
     }
-
-    chat.appendChild(balao);
     balao.scrollIntoView({ behavior: "smooth" });
 }
 
-// ── Envio de mensagem ──────────────────────────────────────
+// Mantida para a mensagem de boas-vindas
+function renderizarResposta(parts) {
+    const balao = document.createElement("div");
+    balao.className = "mensagem ia";
+    chat.appendChild(balao);
+    preencherBalao(parts, balao);
+}
+
+// ── Processamento de eventos SSE ───────────────────────────
+
+function processarEvento(evento, balao, logArea) {
+    switch (evento.tipo) {
+
+        case "ferramenta_inicio": {
+            const item = document.createElement("div");
+            item.className = "log-item ativo";
+            item.dataset.nome = evento.nome;
+            item.textContent = evento.descricao || evento.nome;
+            logArea.appendChild(item);
+            logArea._atual = item;
+            balao.scrollIntoView({ behavior: "smooth" });
+            break;
+        }
+
+        case "ferramenta_fim": {
+            // Marca o item ativo mais recente como concluído
+            const ativo = logArea.querySelector(`.log-item.ativo[data-nome="${evento.nome}"]`);
+            if (ativo) {
+                ativo.classList.remove("ativo");
+                ativo.classList.add("concluido");
+            }
+            break;
+        }
+
+        case "partes": {
+            logArea.remove();
+            preencherBalao(evento.parts, balao);
+            historico.push({ role: "assistant", content: JSON.stringify(evento.parts) });
+            break;
+        }
+
+        case "erro": {
+            logArea.remove();
+            const p = document.createElement("p");
+            p.className = "erro-ia";
+            p.textContent = "Erro: " + evento.mensagem;
+            balao.appendChild(p);
+            balao.scrollIntoView({ behavior: "smooth" });
+            break;
+        }
+    }
+}
+
+// ── Envio de mensagem com streaming SSE ───────────────────
 
 async function enviarMensagem() {
     const texto = input.value.trim();
     if (!texto) return;
 
     btnEnviar.disabled = true;
-    adicionarMensagemUsuario(texto);
-    mostrarIndicadorProcessando();
     input.value = "";
 
+    adicionarMensagemUsuario(texto);
     historico.push({ role: "user", content: texto });
+
+    // Cria balão da IA com área de log imediatamente
+    const balao = document.createElement("div");
+    balao.className = "mensagem ia";
+
+    const logArea = document.createElement("div");
+    logArea.className = "ia-log";
+    const dot = document.createElement("div");
+    dot.className = "log-item ativo";
+    dot.textContent = "Pensando…";
+    logArea.appendChild(dot);
+    balao.appendChild(logArea);
+    chat.appendChild(balao);
+    balao.scrollIntoView({ behavior: "smooth" });
 
     try {
         const resp = await fetch("/api/chat", {
@@ -99,18 +149,42 @@ async function enviarMensagem() {
             }),
         });
 
-        const data = await resp.json();
-        esconderIndicadorProcessando();
-
-        if (data.parts) {
-            renderizarResposta(data.parts);
-            historico.push({ role: "assistant", content: JSON.stringify(data.parts) });
-        } else {
-            renderizarErro(data.erro || "Erro desconhecido");
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
         }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Processa linhas completas (SSE usa \n\n como separador de eventos)
+            const blocos = buffer.split("\n\n");
+            buffer = blocos.pop(); // guarda linha incompleta
+
+            for (const bloco of blocos) {
+                for (const linha of bloco.split("\n")) {
+                    if (!linha.startsWith("data: ")) continue;
+                    try {
+                        const evento = JSON.parse(linha.slice(6));
+                        // Remove o "Pensando…" na primeira ferramenta/parte real
+                        if (dot.parentNode) dot.remove();
+                        processarEvento(evento, balao, logArea);
+                    } catch (e) {
+                        console.error("SSE parse error:", e, linha);
+                    }
+                }
+            }
+        }
+
     } catch (err) {
-        esconderIndicadorProcessando();
-        renderizarErro("Falha na conexão com o servidor.");
+        logArea.remove();
+        renderizarErro("Falha na conexão com o servidor: " + err.message);
     } finally {
         btnEnviar.disabled = false;
         input.focus();
