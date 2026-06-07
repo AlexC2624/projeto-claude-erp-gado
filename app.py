@@ -100,8 +100,13 @@ def executar():
 def _aquecer_modelo() -> None:
     """Carrega o modelo na RAM antes de aceitar requisições."""
     try:
-        logger.info("Carregando modelo '%s' na memória (keep_alive=-1)…", config.OLLAMA_MODEL)
-        ollama.generate(model=config.OLLAMA_MODEL, keep_alive=-1)
+        logger.info(
+            "Carregando modelo '%s' na memória (num_ctx=%s, num_thread=%s)…",
+            config.OLLAMA_MODEL,
+            config.OLLAMA_OPTIONS["num_ctx"],
+            config.OLLAMA_OPTIONS["num_thread"],
+        )
+        ollama.generate(model=config.OLLAMA_MODEL, keep_alive=-1, options=config.OLLAMA_OPTIONS)
         logger.info("Modelo '%s' pronto.", config.OLLAMA_MODEL)
     except Exception as e:
         logger.error("Falha ao carregar modelo: %s", e)

@@ -72,7 +72,8 @@ def orquestrar_stream(mensagem: str, historico: list = None):
                 model=config.OLLAMA_MODEL,
                 messages=messages,
                 tools=TOOLS,
-                keep_alive=-1,   # modelo permanece na RAM entre requisições
+                keep_alive=-1,
+                options=config.OLLAMA_OPTIONS,
             )
 
             logger.debug(
