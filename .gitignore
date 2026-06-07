@@ -1,0 +1,25 @@
+# Ambiente virtual
+venv/
+.venv/
+
+# Banco de dados gerado
+*.db
+*.sqlite
+
+# Cache Python
+__pycache__/
+*.py[cod]
+
+# Configurações locais do editor/IDE
+.claude/
+.vscode/
+*.swp
+
+# Variáveis de ambiente
+.env
+.env.*
+
+# Distribuição Python
+*.egg-info/
+dist/
+build/

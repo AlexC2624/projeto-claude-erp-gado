@@ -1,0 +1,5 @@
+flask>=3.0
+flask-cors
+sqlalchemy>=2.0
+ollama>=0.2
+python-dotenv

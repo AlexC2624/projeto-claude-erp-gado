@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ERP Rural — Assistente IA</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="header-inner">
+            <span class="logo" aria-hidden="true">&#127828;</span>
+            <div>
+                <h1>ERP Rural</h1>
+                <small>Assistente de Gestão Agropecuária</small>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div id="chat" class="chat-area" role="log" aria-live="polite" aria-label="Conversa"></div>
+        <div id="processando" class="processando oculto" aria-label="Processando" aria-hidden="true">
+            <span></span><span></span><span></span>
+        </div>
+    </main>
+
+    <footer>
+        <div class="input-area">
+            <input
+                type="text"
+                id="input"
+                placeholder="Faça uma pergunta sobre a fazenda…"
+                autocomplete="off"
+                aria-label="Mensagem"
+            >
+            <button id="btn-enviar" onclick="enviarMensagem()">Enviar</button>
+        </div>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
